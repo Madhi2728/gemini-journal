@@ -1,5 +1,4 @@
-import { onRequest } from 'firebase-functions/v2/https';
-import { initializeApp } from 'firebase-admin/app';
+import { initializeApp, cert, applicationDefault } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import express from 'express';
 import cors from 'cors';
@@ -9,8 +8,23 @@ import { requireUser } from './lib/auth.js';
 import { consumeAiCall } from './lib/ratelimit.js';
 import { logAudit } from './lib/audit.js';
 import { chat, summarise, MODEL } from './lib/gemini.js';
+import { secretProvider } from './lib/secrets.js';
 
-initializeApp();
+// Admin credentials
+// -----------------
+// Running outside Google Cloud, there is no ambient identity, so the service
+// account arrives as a base64 environment variable from the host's secret
+// store. It is decoded in memory and never written to disk. On Google Cloud
+// the variable is absent and the ambient service account is used instead.
+function credentials() {
+  const encoded = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!encoded) return { credential: applicationDefault() };
+
+  const parsed = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  return { credential: cert(parsed), projectId: parsed.project_id };
+}
+
+initializeApp(credentials());
 const db = getFirestore();
 const app = express();
 
@@ -237,7 +251,7 @@ app.get('/posture', async (req, res) => {
     const data = rate.exists ? rate.data() : {};
     return res.json({
       model: MODEL,
-      keySource: 'Google Cloud Secret Manager',
+      keySource: secretProvider,
       aiCallsUsed: data.count ?? 0,
       aiCallLimit: data.limit ?? 40,
       windowResetsAt: (data.windowStart ?? Date.now()) + 60 * 60 * 1000,
@@ -248,15 +262,21 @@ app.get('/posture', async (req, res) => {
   }
 });
 
-// Firebase Hosting rewrites /api/** to this function and forwards the full
-// path, so the function sees /api/session. A direct function URL (the local
-// emulator) sees /session. Mounting at both makes the two environments behave
-// identically instead of failing only in production.
+// Health check. Render pings this, and it is the fastest way to tell whether a
+// cold start has finished before a demo. Deliberately unauthenticated and
+// deliberately silent about configuration.
 const root = express();
+root.get('/healthz', (_req, res) => res.json({ ok: true }));
+
+// Mounted at both paths so the same build works behind a proxy that preserves
+// the /api prefix and one that strips it.
 root.use('/api', app);
 root.use('/', app);
 
-export const api = onRequest(
-  { region: 'us-central1', memory: '512MiB', timeoutSeconds: 60, maxInstances: 10 },
-  root,
-);
+const port = process.env.PORT || 8080;
+root.listen(port, () => {
+  console.log(`journal api listening on ${port}`);
+  console.log(`secrets: ${secretProvider}`);
+  console.log(`model: ${MODEL}`);
+  console.log(`origins: ${ORIGINS.join(', ') || 'none configured'}`);
+});

@@ -60,14 +60,14 @@ needs a server-side hop. This one is a single Express app behind one function.
 
 | Control | File |
 | --- | --- |
-| Key from Secret Manager, cached, fails closed | `functions/lib/secrets.js` |
-| Identity from verified ID token only | `functions/lib/auth.js` |
-| Ownership re-checked in app code | `functions/index.js` |
-| Per-user AI quota, transactional | `functions/lib/ratelimit.js` |
-| Prompt injection delimiting | `functions/lib/gemini.js` |
-| Model output validated and clamped | `functions/lib/gemini.js` |
+| Key from Secret Manager, cached, fails closed | `server/lib/secrets.js` |
+| Identity from verified ID token only | `server/lib/auth.js` |
+| Ownership re-checked in app code | `server/index.js` |
+| Per-user AI quota, transactional | `server/lib/ratelimit.js` |
+| Prompt injection delimiting | `server/lib/gemini.js` |
+| Model output validated and clamped | `server/lib/gemini.js` |
 | Default-deny rules, no client writes | `firestore.rules` |
-| Audit log with a field allowlist | `functions/lib/audit.js` |
+| Audit log with a field allowlist | `server/lib/audit.js` |
 | Client-side encryption | `src/lib/crypto.js` |
 | CSP and security headers | `firebase.json` |
 
@@ -78,52 +78,73 @@ them by design, so every route re-checks ownership itself.
 
 ## Setup
 
-**1. Firebase project.** Create one, then enable Authentication (Google
-provider), Firestore, and upgrade to Blaze — Cloud Functions requires it.
+No card required. Firestore, Auth and Hosting run on Firebase's free Spark
+plan; the API runs on Render's free tier.
 
-**2. Store the Gemini key.** Get a key from AI Studio, then:
+**1. Firebase project.** Create one at console.firebase.google.com. Stay on
+Spark. Enable Authentication with the Google provider, and create a Firestore
+database in production mode.
+
+**2. Service account.** Project settings -> Service accounts -> Generate new
+private key. Base64 it, because Render environment variables are single-line:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("serviceAccount.json")) | Set-Clipboard
+```
+
+Delete the JSON file afterwards. It is a real credential and `.gitignore`
+covers `*-key.json`, not every name it might have.
+
+**3. Deploy the API to Render.** New -> Web Service, connect this repo, and
+Render reads `render.yaml`. Set four values under Environment:
+
+| Variable | Value |
+| --- | --- |
+| `GEMINI_API_KEY` | your AI Studio key |
+| `FIREBASE_SERVICE_ACCOUNT` | the base64 blob from step 2 |
+| `ALLOWED_ORIGINS` | `https://YOUR_PROJECT.web.app` |
+| `SECRET_PROVIDER` | `env` |
+
+**4. Point the client at it.** Copy `.env.example` to `.env`, fill in the
+Firebase web config from Project settings, and set `VITE_API_BASE` to your
+Render URL with `/api` on the end.
+
+**5. Deploy the client.**
+
+```bash
+npm install
+npm run build
+firebase deploy --only hosting,firestore:rules
+```
+
+Local development: `npm run dev` for the client, and `npm start` in `server/`
+with a `.env` based on `server/.env.example`.
+
+### Switching to Secret Manager
+
+Secret Manager needs billing enabled on the Google Cloud project, which is why
+it is not the default here. The code supports it already. If you enable billing:
 
 ```bash
 gcloud services enable secretmanager.googleapis.com
 printf '%s' 'YOUR_KEY' | gcloud secrets create gemini-api-key --data-file=-
 ```
 
-Grant the runtime service account access to that secret and nothing else:
+Then set `SECRET_PROVIDER=gcp` and drop `GEMINI_API_KEY`. Nothing else changes,
+and the security dashboard reports the new provider on its own.
 
-```bash
-gcloud secrets add-iam-policy-binding gemini-api-key \
-  --member="serviceAccount:PROJECT_ID@appspot.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
-```
+Both paths hold the same property: the key is read at runtime, server-side
+only, and never reaches the repository or the browser. Only the store differs.
 
-**3. Configure the client.** Copy `.env.example` to `.env` and fill in the
-Firebase web config from Project settings. These values are public by design;
-the Gemini key is not among them and never will be.
+### One thing about the free tier
 
-**4. Set the allowed origin** for the backend:
-
-```bash
-firebase functions:config:unset 2>/dev/null
-# set ALLOWED_ORIGINS in functions/.env, e.g.
-echo "ALLOWED_ORIGINS=https://YOUR_PROJECT.web.app" > functions/.env
-```
-
-**5. Install and deploy.**
-
-```bash
-npm install
-cd functions && npm install && cd ..
-firebase deploy
-```
-
-For local work: `npm run dev` alongside `firebase emulators:start`, and point
-`VITE_API_BASE` at the emulator URL.
-
----
+Render free instances sleep after about 15 minutes idle, and the next request
+takes roughly a minute to wake them. Hit `/healthz` a couple of minutes before
+demoing, or the first judge to click sign-in will watch a spinner.
 
 ## Model version
 
-The model name is a single constant in `functions/lib/gemini.js`, overridable
+The model name is a single constant in `server/lib/gemini.js`, overridable
 with the `GEMINI_MODEL` environment variable. Google retires model aliases
 quickly — check the current list at ai.google.dev/gemini-api/docs/models before
 demoing, and change that one line if needed.

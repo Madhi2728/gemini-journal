@@ -1,0 +1,25 @@
+# Render blueprint. Free instance type, no card required.
+#
+# Secrets are set in the Render dashboard under Environment, never here.
+# This file is committed to a public repo, so it must stay free of values.
+
+services:
+  - type: web
+    name: gemini-journal-api
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: SECRET_PROVIDER
+        value: env
+      - key: GEMINI_API_KEY
+        sync: false          # set in the dashboard
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false          # base64 of the service account JSON
+      - key: ALLOWED_ORIGINS
+        sync: false          # https://YOUR_PROJECT.web.app
+      - key: GEMINI_MODEL
+        value: gemini-3.7-flash
