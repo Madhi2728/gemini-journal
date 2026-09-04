@@ -1,0 +1,31 @@
+rules_version = '2';
+
+// Isolation model
+// ---------------
+// Every document belongs to exactly one user and lives under users/{uid}/.
+// A signed-in user can READ only their own subtree. Nobody can WRITE from the
+// client at all -- every mutation goes through the backend, which verifies a
+// Firebase ID token and re-checks ownership in application code.
+//
+// The Admin SDK bypasses these rules by design, so rules are the second line
+// of defence, not the only one.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+      allow write: if false;
+
+      // entries, audit, sessions, meta, vault
+      match /{sub=**} {
+        allow read: if isOwner(uid);
+        allow write: if false;
+      }
+    }
+  }
+}
