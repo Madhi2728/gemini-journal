@@ -248,7 +248,15 @@ app.get('/posture', async (req, res) => {
   }
 });
 
+// Firebase Hosting rewrites /api/** to this function and forwards the full
+// path, so the function sees /api/session. A direct function URL (the local
+// emulator) sees /session. Mounting at both makes the two environments behave
+// identically instead of failing only in production.
+const root = express();
+root.use('/api', app);
+root.use('/', app);
+
 export const api = onRequest(
   { region: 'us-central1', memory: '512MiB', timeoutSeconds: 60, maxInstances: 10 },
-  app,
+  root,
 );
